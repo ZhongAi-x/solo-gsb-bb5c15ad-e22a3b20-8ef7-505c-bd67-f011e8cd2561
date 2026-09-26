@@ -1,0 +1,11 @@
+services:
+  temporal-checker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: temporal-constraint-checker:latest
+    container_name: temporal-constraint-checker
+    ports:
+      # 宿主机端口:容器端口。如 8080 被占用，可修改左侧端口
+      - "8080:80"
+    restart: unless-stopped

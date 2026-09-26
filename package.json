@@ -1,0 +1,25 @@
+{
+  "name": "temporal-constraint-checker",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "事件时序约束校验：多条绝对时间观测区间与相对约束接入同一差分约束图，实时可满足性判定、混合矛盾链高亮、统一绝对时间窗、分层最小偏差排程",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host",
+    "test": "esbuild scripts/test-graph.ts --bundle --platform=node --format=esm --outfile=/tmp/test-graph.mjs && node /tmp/test-graph.mjs",
+    "smoke": "esbuild scripts/smoke-app.tsx --bundle --platform=node --format=esm --alias:react-dom/server=react-dom/server.browser --outfile=/tmp/smoke-app.mjs && node /tmp/smoke-app.mjs"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}
