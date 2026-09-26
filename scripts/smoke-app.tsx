@@ -11,6 +11,7 @@ import WindowsTable from '../src/components/WindowsTable'
 import CyclePanel from '../src/components/CyclePanel'
 import ObservationEditor from '../src/components/ObservationEditor'
 import AuditPanel from '../src/components/AuditPanel'
+import SnapshotPanel from '../src/components/SnapshotPanel'
 import { analyze, traceBound } from '../src/lib/graph'
 import { auditRedundancy } from '../src/lib/audit'
 import { buildConsistentSample } from '../src/lib/samples'
@@ -35,6 +36,8 @@ check(appHtml, '时间原点', 'App')
 check(appHtml, '绝对时间观测', 'App')
 check(appHtml, '批量证词导入', 'App')
 check(appHtml, 'EVENT / REL / OBS', 'App')
+check(appHtml, '案卷快照', 'App')
+check(appHtml, '下载快照 JSON', 'App')
 check(appHtml, '精确时刻（零宽区间）', 'App')
 check(appHtml, '直接观测', 'App')
 
@@ -78,6 +81,16 @@ const obsHtml = renderToString(
 )
 check(obsHtml, '添加观测', '观测编辑器')
 check(obsHtml, '发生于', '观测编辑器')
+
+// 1e) 案卷快照面板可独立渲染（导出计数 / 导入入口 / 格式说明）
+const snapHtml = renderToString(h(SnapshotPanel, { state: s0, onApply: () => {} }))
+check(snapHtml, '案卷快照（导出 / 导入）', '快照面板')
+check(snapHtml, '下载快照 JSON', '快照面板')
+check(snapHtml, '从快照文件导入', '快照面板')
+check(snapHtml, '事件 7', '快照面板：导出记录数')
+check(snapHtml, '观测 1', '快照面板：导出记录数')
+check(snapHtml, '快照 JSON 格式说明与示例', '快照面板：格式说明')
+check(snapHtml, 'formatVersion', '快照面板：格式说明')
 
 // 2) 主时间窗表 + 三种追溯形态
 const s = buildConsistentSample()

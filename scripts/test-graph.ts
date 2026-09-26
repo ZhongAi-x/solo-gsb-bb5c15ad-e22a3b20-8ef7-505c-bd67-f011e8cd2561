@@ -2,10 +2,17 @@ import { analyze, buildEdges, buildSystem, constraintToEdges, traceBound } from 
 import { auditRedundancy } from '../src/lib/audit'
 import { DEFAULT_STATE_LIMIT, findMinimalRepairs, MAX_PLANS } from '../src/lib/repair'
 import { computeMinDeviationSchedule } from '../src/lib/schedule'
-import { buildConsistentSample, buildContradictionSample } from '../src/lib/samples'
+import { buildConsistentSample, buildContradictionSample, emptyState } from '../src/lib/samples'
 import { migrateState } from '../src/lib/storage'
 import { buildImportEntities, parseDsl } from '../src/lib/dsl'
+import {
+  SNAPSHOT_FORMAT_VERSION,
+  serializeSnapshot,
+  snapshotFileName,
+  validateSnapshot,
+} from '../src/lib/snapshot'
 import type {
+  AppState,
   Constraint,
   LayerResult,
   PriorityLevel,
@@ -1317,6 +1324,282 @@ function scheduleFeasible(
   const e1 = byId.get(s.constraints[0].id)!
   assert(e1.derivedMin === -12 && e1.derivedMax === 12 && e1.verdict === 'necessary', '首条约束推导区间 [−12,12]')
   assert(entries.every((e) => e.verdict === 'necessary'), '可满足示例的证词全部为必要（无冗余）')
+}
+
+// ==================== 案卷快照：导出 / 校验 / 整包导入 ====================
+
+/** 键序无关的规范化序列化（对象键排序、忽略 undefined 值），用于语义相等比较 */
+function canon(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canon).join(',')}]`
+  if (v !== null && typeof v === 'object') {
+    const o = v as Record<string, unknown>
+    return `{${Object.keys(o)
+      .filter((k) => o[k] !== undefined)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${canon(o[k])}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(v) ?? 'undefined'
+}
+
+// ---- 导出 → 校验往返：两套示例与空案卷都通过，五个集合内容一致、记录数正确 ----
+{
+  const roundtrip = (label: string, s: AppState) => {
+    const json = serializeSnapshot(s)
+    assert(JSON.parse(json).formatVersion === SNAPSHOT_FORMAT_VERSION, `${label}：快照带格式版本号`)
+    const v = validateSnapshot(json)
+    assert(v.errors.length === 0, `${label}：导出快照校验通过（${v.errors.map((e) => e.message).join('；')}）`)
+    assert(v.state !== null, `${label}：校验通过给出可应用状态`)
+    for (const key of ['events', 'constraints', 'observations', 'desiredTimes', 'desiredPriorities'] as const) {
+      assert(canon(v.state![key]) === canon(s[key]), `${label}：往返后 ${key} 一致`)
+    }
+    assert(
+      v.counts.events === s.events.length &&
+        v.counts.constraints === s.constraints.length &&
+        v.counts.observations === s.observations.length &&
+        v.counts.desiredTimes === Object.keys(s.desiredTimes).length &&
+        v.counts.desiredPriorities === Object.keys(s.desiredPriorities).length,
+      `${label}：记录数预览正确`,
+    )
+  }
+  roundtrip('可满足示例', buildConsistentSample())
+  roundtrip('矛盾示例', buildContradictionSample())
+  roundtrip('空案卷', emptyState())
+}
+
+// ---- 导出格式：带格式版本、带缩进的格式化文本、文件名规则 ----
+{
+  const json = serializeSnapshot(emptyState())
+  assert(json.includes('"formatVersion": 1'), '导出 JSON 含格式版本字段')
+  assert(json.includes('\n  "events"'), '导出 JSON 为带缩进的格式化文本')
+  assert(
+    snapshotFileName(new Date(2026, 8, 26, 9, 5)) === 'case-snapshot-20260926-0905.json',
+    '快照文件名规则 case-snapshot-yyyyMMdd-HHmm.json',
+  )
+}
+
+// ---- 非 JSON / 非对象顶层 / 格式版本问题 ----
+{
+  const badJson = validateSnapshot('{ not json')
+  assert(badJson.state === null && badJson.errors.length === 1 && badJson.errors[0].path === '$', '非法 JSON：1 个错误且不可应用')
+
+  for (const text of ['[]', '"x"', '5', 'null']) {
+    const v = validateSnapshot(text)
+    assert(v.state === null && v.errors.length === 1, `非对象顶层（${text}）被拒绝`)
+  }
+
+  const noVersion = validateSnapshot(
+    JSON.stringify({ events: [], constraints: [], observations: [], desiredTimes: {}, desiredPriorities: {} }),
+  )
+  assert(noVersion.state === null && noVersion.errors.some((e) => e.path === 'formatVersion'), '缺少 formatVersion 被拒绝')
+
+  const wrongVersion = validateSnapshot(
+    JSON.stringify({ formatVersion: 2, events: [], constraints: [], observations: [], desiredTimes: {}, desiredPriorities: {} }),
+  )
+  assert(wrongVersion.state === null && wrongVersion.errors.some((e) => e.path === 'formatVersion'), '不支持的格式版本被拒绝')
+
+  const emptyOk = validateSnapshot(
+    JSON.stringify({ formatVersion: 1, events: [], constraints: [], observations: [], desiredTimes: {}, desiredPriorities: {} }),
+  )
+  assert(emptyOk.errors.length === 0 && emptyOk.state !== null, '空案卷快照合法')
+
+  const notArray = validateSnapshot(
+    JSON.stringify({ formatVersion: 1, events: {}, constraints: [], observations: [], desiredTimes: {}, desiredPriorities: {} }),
+  )
+  assert(notArray.errors.some((e) => e.path === 'events'), 'events 非数组被拒绝')
+}
+
+// ---- 事件：字段类型与 id 唯一 ----
+{
+  const base = { formatVersion: 1, constraints: [], observations: [], desiredTimes: {}, desiredPriorities: {} }
+  const dup = validateSnapshot(
+    JSON.stringify({ ...base, events: [{ id: 'e1', name: '甲' }, { id: 'e1', name: '乙' }] }),
+  )
+  assert(dup.state === null && dup.errors.some((e) => e.path === 'events[1].id' && e.message.includes('重复')), '事件 id 重复被拒绝')
+
+  const badFields = validateSnapshot(
+    JSON.stringify({
+      ...base,
+      events: [{ id: '', name: '空 id' }, { id: 'e2', name: 3 }, { id: 'e3', name: '丙', note: 7 }, 'not-an-object'],
+    }),
+  )
+  assert(badFields.errors.some((e) => e.path === 'events[0].id'), '事件空 id 报错')
+  assert(badFields.errors.some((e) => e.path === 'events[1].name'), '事件名非字符串报错')
+  assert(badFields.errors.some((e) => e.path === 'events[2].note'), '事件备注非字符串报错')
+  assert(badFields.errors.some((e) => e.path === 'events[3]'), '非对象事件报错')
+  assert(badFields.counts.events === 4, '有错误时仍统计记录数预览')
+}
+
+// ---- 约束：引用存在、分钟数为非负整数且 min ≤ max、relation/enabled 类型、id 唯一 ----
+{
+  const ev = [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }]
+  const mk = (c: unknown) =>
+    validateSnapshot(
+      JSON.stringify({ formatVersion: 1, events: ev, observations: [], desiredTimes: {}, desiredPriorities: {}, constraints: [c] }),
+    )
+  assert(
+    mk({ id: 'c1', aId: 'a', bId: 'zz', relation: 'earlier', min: 0, max: 5, enabled: true }).errors.some(
+      (e) => e.path === 'constraints[0].bId',
+    ),
+    '约束引用不存在事件被拒绝',
+  )
+  assert(
+    mk({ id: 'c1', aId: 'a', bId: 'b', relation: 'before', min: 0, max: 5, enabled: true }).errors.some(
+      (e) => e.path === 'constraints[0].relation',
+    ),
+    '非法 relation 被拒绝',
+  )
+  assert(
+    mk({ id: 'c1', aId: 'a', bId: 'b', relation: 'earlier', min: -1, max: 5, enabled: true }).errors.some(
+      (e) => e.path === 'constraints[0].min',
+    ),
+    '负分钟被拒绝',
+  )
+  assert(
+    mk({ id: 'c1', aId: 'a', bId: 'b', relation: 'earlier', min: 1.5, max: 5, enabled: true }).errors.some(
+      (e) => e.path === 'constraints[0].min',
+    ),
+    '非整数分钟被拒绝',
+  )
+  assert(
+    mk({ id: 'c1', aId: 'a', bId: 'b', relation: 'earlier', min: 6, max: 5, enabled: true }).errors.some(
+      (e) => e.path === 'constraints[0].min' && e.message.includes('大于'),
+    ),
+    'min > max 被拒绝',
+  )
+  assert(
+    mk({ id: 'c1', aId: 'a', bId: 'b', relation: 'earlier', min: 0, max: 5, enabled: 'yes' }).errors.some(
+      (e) => e.path === 'constraints[0].enabled',
+    ),
+    'enabled 非布尔被拒绝',
+  )
+  const dup = validateSnapshot(
+    JSON.stringify({
+      formatVersion: 1,
+      events: ev,
+      observations: [],
+      desiredTimes: {},
+      desiredPriorities: {},
+      constraints: [
+        { id: 'c1', aId: 'a', bId: 'b', relation: 'earlier', min: 0, max: 5, enabled: true },
+        { id: 'c1', aId: 'a', bId: 'b', relation: 'later', min: 1, max: 2, enabled: false },
+      ],
+    }),
+  )
+  assert(dup.errors.some((e) => e.path === 'constraints[1].id' && e.message.includes('重复')), '约束 id 重复被拒绝')
+  // 自引用约束（A 比 A 早 0 分钟）是应用本身可产生的数据：格式合法，允许导入
+  assert(
+    mk({ id: 'c1', aId: 'a', bId: 'a', relation: 'earlier', min: 0, max: 0, enabled: true }).errors.length === 0,
+    '自引用约束不作为格式错误',
+  )
+}
+
+// ---- 观测：引用存在、yyyy-MM-ddTHH:mm 严格校验、起点不晚于终点、id 唯一 ----
+{
+  const ev = [{ id: 'a', name: 'A' }]
+  const mk = (o: unknown) =>
+    validateSnapshot(
+      JSON.stringify({ formatVersion: 1, events: ev, constraints: [], desiredTimes: {}, desiredPriorities: {}, observations: [o] }),
+    )
+  assert(
+    mk({ id: 'o1', eventId: 'zz', start: '2026-01-01T08:00', end: '2026-01-01T08:00' }).errors.some(
+      (e) => e.path === 'observations[0].eventId',
+    ),
+    '观测引用不存在事件被拒绝',
+  )
+  for (const bad of ['2026-1-1T08:00', '2026-01-01 08:00', '2026-02-30T08:00', '2026-01-01T25:00', '2026-01-01T08:00:00', '08:00']) {
+    assert(
+      mk({ id: 'o1', eventId: 'a', start: bad, end: '2026-01-01T09:00' }).errors.some((e) => e.path === 'observations[0].start'),
+      `非法观测时刻 ${bad} 被拒绝`,
+    )
+  }
+  assert(
+    mk({ id: 'o1', eventId: 'a', start: '2026-01-01T09:00', end: '2026-01-01T08:00' }).errors.some(
+      (e) => e.path === 'observations[0].end' && e.message.includes('早于'),
+    ),
+    '观测终点早于起点被拒绝',
+  )
+  assert(
+    mk({ id: 'o1', eventId: 'a', start: '2026-01-01T08:00', end: '2026-01-01T08:00' }).errors.length === 0,
+    '零宽精确观测合法',
+  )
+  const dup = validateSnapshot(
+    JSON.stringify({
+      formatVersion: 1,
+      events: ev,
+      constraints: [],
+      desiredTimes: {},
+      desiredPriorities: {},
+      observations: [
+        { id: 'o1', eventId: 'a', start: '2026-01-01T08:00', end: '2026-01-01T08:00' },
+        { id: 'o1', eventId: 'a', start: '2026-01-01T09:00', end: '2026-01-01T09:00' },
+      ],
+    }),
+  )
+  assert(dup.errors.some((e) => e.path === 'observations[1].id' && e.message.includes('重复')), '观测 id 重复被拒绝')
+}
+
+// ---- 期望时刻与优先级：映射键属于现存事件、时刻格式、层级取值 ----
+{
+  const ev = [{ id: 'a', name: 'A' }]
+  const mk = (desiredTimes: unknown, desiredPriorities: unknown) =>
+    validateSnapshot(
+      JSON.stringify({ formatVersion: 1, events: ev, constraints: [], observations: [], desiredTimes, desiredPriorities }),
+    )
+  assert(mk({ zz: '2026-01-01T08:00' }, {}).errors.some((e) => e.path === 'desiredTimes["zz"]'), '期望时刻键指向不存在事件被拒绝')
+  assert(mk({ a: '2026-01-01 08:00' }, {}).errors.some((e) => e.path === 'desiredTimes["a"]'), '期望时刻非法格式被拒绝')
+  assert(mk({ a: '2026-02-30T08:00' }, {}).errors.some((e) => e.path === 'desiredTimes["a"]'), '期望时刻非法日期被拒绝')
+  assert(mk({}, { a: 'urgent' }).errors.some((e) => e.path === 'desiredPriorities["a"]'), '非法优先级被拒绝')
+  assert(mk({}, { zz: 'high' }).errors.some((e) => e.path === 'desiredPriorities["zz"]'), '优先级键指向不存在事件被拒绝')
+  assert(mk([], {}).errors.some((e) => e.path === 'desiredTimes'), 'desiredTimes 非对象被拒绝')
+  assert(mk({ a: '2026-01-01T08:00' }, { a: 'low' }).errors.length === 0, '合法期望与优先级通过')
+  assert(mk({}, { a: 'high' }).errors.length === 0, '仅有优先级无期望时刻不作为格式错误')
+}
+
+// ---- 逐项收集全部错误；任一错误禁止应用（不静默丢弃记录），记录数预览仍完整 ----
+{
+  const v = validateSnapshot(
+    JSON.stringify({
+      formatVersion: 1,
+      events: [{ id: 'a', name: 'A' }, { id: 'a', name: 'A2' }, { id: 'b', name: 'B' }],
+      constraints: [{ id: 'c1', aId: 'a', bId: 'ghost', relation: 'earlier', min: 0, max: 5, enabled: true }],
+      observations: [{ id: 'o1', eventId: 'b', start: '2026-01-01T09:00', end: '2026-01-01T08:00' }],
+      desiredTimes: { ghost2: '2026-01-01T08:00' },
+      desiredPriorities: { a: 'urgent' },
+    }),
+  )
+  assert(v.state === null, '存在错误时无可应用状态（禁止部分导入）')
+  assert(v.errors.length >= 5, `全部错误逐项收集（实际 ${v.errors.length} 个）`)
+  assert(
+    v.counts.events === 3 &&
+      v.counts.constraints === 1 &&
+      v.counts.observations === 1 &&
+      v.counts.desiredTimes === 1 &&
+      v.counts.desiredPriorities === 1,
+    '有错误时记录数预览仍完整',
+  )
+}
+
+// ---- 格式合法但时序矛盾的快照：允许导入，导入后由现有分析检出矛盾 ----
+{
+  const contradictory = {
+    formatVersion: 1,
+    events: [
+      { id: 'a', name: 'A：车辆驶入路口' },
+      { id: 'b', name: 'B：听到刹车声' },
+    ],
+    constraints: [{ id: 'c1', aId: 'b', bId: 'a', relation: 'later', min: 10, max: 20, enabled: true }],
+    observations: [
+      { id: 'o1', eventId: 'a', start: '2026-01-01T08:00', end: '2026-01-01T08:00' },
+      { id: 'o2', eventId: 'b', start: '2026-01-01T08:05', end: '2026-01-01T08:05' },
+    ],
+    desiredTimes: {},
+    desiredPriorities: {},
+  }
+  const v = validateSnapshot(JSON.stringify(contradictory))
+  assert(v.errors.length === 0 && v.state !== null, '时序矛盾不作为格式错误：允许导入')
+  const r = analyze(v.state!.events, v.state!.constraints, v.state!.observations)
+  assert(!r.satisfiable && !!r.cycle, '导入的矛盾快照由现有分析检出负环')
 }
 
 console.log(`\n${passed} passed, ${failed} failed`)
