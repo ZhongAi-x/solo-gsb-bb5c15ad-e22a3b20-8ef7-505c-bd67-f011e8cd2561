@@ -21,6 +21,7 @@ import WindowsTable from './components/WindowsTable'
 import RepairPanel from './components/RepairPanel'
 import SchedulePanel from './components/SchedulePanel'
 import BatchImportPanel from './components/BatchImportPanel'
+import SnapshotPanel from './components/SnapshotPanel'
 import type { DslImportEntities } from './lib/dsl'
 
 export default function App() {
@@ -336,6 +337,14 @@ export default function App() {
     }))
   }
 
+  // —— 案卷快照：校验已在面板内完成（有错误时确认按钮不可用），
+  //    这里把校验通过的状态整包替换当前案卷；state 变更即实时重算并写入 localStorage ——
+  const applySnapshot = (next: AppState) => {
+    setPreviewIndex(null)
+    setTraceReq(null)
+    setState(next)
+  }
+
   const resetAll = () => {
     if (!window.confirm('确定清空全部事件、约束、观测与本地存储数据吗？')) return
     setPreviewIndex(null)
@@ -545,6 +554,11 @@ export default function App() {
         <BatchImportPanel events={events} onImport={importBatch} />
       </div>
 
+      {/* 案卷快照（全宽）：下载带格式版本的 JSON / 选择文件完整校验后整包替换 */}
+      <div style={{ marginTop: 16 }}>
+        <SnapshotPanel state={state} onApply={applySnapshot} />
+      </div>
+
       {/* 时间窗（预览时展示修复后的窗口；正常可满足时展示当前窗口） */}
       {effectiveResult.satisfiable && (
         <div style={{ marginTop: 16 }}>
@@ -584,6 +598,7 @@ export default function App() {
         停用某条相对约束可即时验证“去掉该证词后矛盾是否消除” ·
         观测的新增、编辑、删除与其他任何编辑一样实时重算并持久化；观测作为事实记录不参与修复停用 ·
         批量证词导入先解析为只读预览，任何一行有错都禁止写入，确认后一次性合并（不覆盖现有数据）·
+        案卷快照可下载为带格式版本的 JSON，导入时先完整校验（任一错误禁止应用），确认后整包替换当前案卷 ·
         冗余证词审计实时重算且只读，不改写约束与本地存档
       </div>
     </div>

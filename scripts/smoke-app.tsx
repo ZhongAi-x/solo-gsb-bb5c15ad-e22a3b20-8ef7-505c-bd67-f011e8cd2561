@@ -11,6 +11,7 @@ import WindowsTable from '../src/components/WindowsTable'
 import CyclePanel from '../src/components/CyclePanel'
 import ObservationEditor from '../src/components/ObservationEditor'
 import AuditPanel from '../src/components/AuditPanel'
+import SnapshotPanel from '../src/components/SnapshotPanel'
 import { analyze, traceBound } from '../src/lib/graph'
 import { auditRedundancy } from '../src/lib/audit'
 import { buildConsistentSample } from '../src/lib/samples'
@@ -78,6 +79,17 @@ const obsHtml = renderToString(
 )
 check(obsHtml, '添加观测', '观测编辑器')
 check(obsHtml, '发生于', '观测编辑器')
+
+// 1e) 案卷快照面板：App 内嵌渲染 + 独立渲染（下载入口 / 文件选择 / 格式说明）
+check(appHtml, '案卷快照', '案卷快照面板')
+check(appHtml, '下载快照', '案卷快照面板')
+check(appHtml, '选择快照文件', '案卷快照面板')
+check(appHtml, '快照格式说明与示例', '案卷快照面板')
+check(appHtml, '确认后整包替换当前案卷', '案卷快照面板')
+const snapHtml = renderToString(h(SnapshotPanel, { state: s0, onApply: () => {} }))
+check(snapHtml, '案卷快照', '快照面板独立渲染')
+check(snapHtml, '下载快照', '快照面板独立渲染')
+check(snapHtml, 'case-snapshot', '快照面板格式示例')
 
 // 2) 主时间窗表 + 三种追溯形态
 const s = buildConsistentSample()

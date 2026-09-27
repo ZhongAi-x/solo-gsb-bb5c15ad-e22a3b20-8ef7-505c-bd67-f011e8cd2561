@@ -178,8 +178,8 @@ function readTimeRange(s: string, from: number): { start: string; end: string; n
   return { start, end, next: from + m[0].length }
 }
 
-/** 严格校验年月日时分（含大小月与闰年） */
-function validDateTime(yStr: string, moStr: string, dStr: string, hStr: string, miStr: string): boolean {
+/** 严格校验年月日时分（含大小月与闰年）；案卷快照校验复用 */
+export function validDateTime(yStr: string, moStr: string, dStr: string, hStr: string, miStr: string): boolean {
   const y = Number(yStr)
   const mo = Number(moStr)
   const d = Number(dStr)
